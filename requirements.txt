@@ -1,6 +1,6 @@
 nltk
 pandas
-tensorflow
+tensorflow==2.11
 scikit-learn
 numpy
 matplotlib
@@ -11,3 +11,5 @@ gensim
 wordcloud
 datasets
 gitpython
+transformers
+tf_keras
