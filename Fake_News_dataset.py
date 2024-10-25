@@ -388,10 +388,6 @@ data_df = data_df.drop_duplicates()
 # 3. Text Preprocessing Function
 # -------------------------
 
-# Download NLTK data (if not already downloaded)
-import nltk
-nltk.download('punkt')
-nltk.download('stopwords')
 
 def preprocess_text(text):
     # Convert to lowercase
