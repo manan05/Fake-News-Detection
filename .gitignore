@@ -44,7 +44,7 @@ python_env/
 *.key
 
 # Data
-*.csv
+
 *.hdf5
 *.json
 
@@ -56,3 +56,4 @@ Thumbs.db
 # Virtual environments
 .vscode/
 .idea/
+./LIAR2
