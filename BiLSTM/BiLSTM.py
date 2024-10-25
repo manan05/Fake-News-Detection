@@ -146,9 +146,9 @@ def main() -> None:
     # Load datasets with label mapping
     label_map = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1}
     train_df, val_df, test_df = load_and_map_labels(
-        './data/train.csv',
-        './data/valid.csv',
-        './data/test.csv',
+        '.,/data/train.csv',
+        '../data/valid.csv',
+        '../data/test.csv',
         label_map
     )
 
