@@ -1,0 +1,12 @@
+pandas
+numpy
+matplotlib
+seaborn
+tabulate
+scikit-learn
+scipy
+nltk
+gensim
+wordcloud
+datasets
+gitpython
