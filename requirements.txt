@@ -1,11 +1,12 @@
+nltk
 pandas
+tensorflow
+scikit-learn
 numpy
 matplotlib
 seaborn
 tabulate
-scikit-learn
 scipy
-nltk
 gensim
 wordcloud
 datasets
