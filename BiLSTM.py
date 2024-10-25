@@ -1,17 +1,19 @@
 import re
+import pickle
 from typing import Tuple
 
 import nltk
 import pandas as pd
 import tensorflow as tf
 from sklearn.preprocessing import LabelEncoder
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.layers import (Bidirectional, Dense, Dropout, Embedding,
                                      LSTM)
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.mixed_precision import set_global_policy
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.preprocessing.text import Tokenizer
+import os
 
 # Ensure nltk packages are downloaded
 def download_nltk_dependencies() -> None:
@@ -104,6 +106,16 @@ def build_model(input_dim: int, output_dim: int, input_length: int) -> Sequentia
 
 
 def main() -> None:
+    # Define directories for saving models and artifacts
+    SAVE_DIR = './saved_models'
+    TOKENIZER_PATH = os.path.join(SAVE_DIR, 'tokenizer.pkl')
+    LABEL_MAP_PATH = os.path.join(SAVE_DIR, 'label_map.pkl')
+    BEST_MODEL_PATH = os.path.join(SAVE_DIR, 'best_model.h5')
+    FINAL_MODEL_PATH = os.path.join(SAVE_DIR, 'final_model.h5')
+
+    # Create directories if they don't exist
+    os.makedirs(SAVE_DIR, exist_ok=True)
+
     # Download necessary NLTK data
     download_nltk_dependencies()
 
@@ -113,6 +125,19 @@ def main() -> None:
     # Verify GPU availability
     gpus = tf.config.list_physical_devices('GPU')
     print(f"Num GPUs Available: {len(gpus)}")
+    if gpus:
+        # Set memory growth to prevent TensorFlow from allocating all GPU memory at once
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            logical_gpus = tf.config.list_logical_devices('GPU')
+            print(f"{len(gpus)} Physical GPUs, {len(logical_gpus)} Logical GPUs")
+        except RuntimeError as e:
+            # Memory growth must be set before GPUs have been initialized
+            print(e)
+    else:
+        print("No GPUs detected. Exiting...")
+        return
 
     # Initialize stemmer and stopwords
     stemmer = nltk.stem.PorterStemmer()
@@ -120,7 +145,17 @@ def main() -> None:
 
     # Load datasets with label mapping
     label_map = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1}
-    train_df, val_df, test_df = load_and_map_labels('./data/train.csv', './data/valid.csv', './data/test.csv', label_map)
+    train_df, val_df, test_df = load_and_map_labels(
+        './data/train.csv',
+        './data/valid.csv',
+        './data/test.csv',
+        label_map
+    )
+
+    # Save label_map for future use
+    with open(LABEL_MAP_PATH, 'wb') as f:
+        pickle.dump(label_map, f)
+    print(f"Label map saved to {LABEL_MAP_PATH}")
 
     # Preprocess the 'statement' column in each DataFrame
     for df in [train_df, val_df, test_df]:
@@ -131,6 +166,11 @@ def main() -> None:
     # Tokenization
     tokenizer = Tokenizer(num_words=10000, oov_token="<OOV>")
     tokenizer.fit_on_texts(train_df['statement'])
+
+    # Save the tokenizer for future use
+    with open(TOKENIZER_PATH, 'wb') as f:
+        pickle.dump(tokenizer, f)
+    print(f"Tokenizer saved to {TOKENIZER_PATH}")
 
     # Convert text to sequences
     X_train = tokenizer.texts_to_sequences(train_df['statement'])
@@ -148,26 +188,52 @@ def main() -> None:
     y_val = val_df['label'].values
     y_test = test_df['label'].values
 
-    # Build and compile the model
-    model = build_model(input_dim=10000, output_dim=64, input_length=max_length)
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
-    model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+    # Build and compile the model within the GPU device context
+    with tf.device('/GPU:0'):
+        model = build_model(input_dim=10000, output_dim=64, input_length=max_length)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
+        model.compile(
+            loss='binary_crossentropy',
+            optimizer=optimizer,
+            metrics=['accuracy']
+        )
 
     # Display model architecture
     model.summary()
 
-    # Training with early stopping
-    early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
-    model.fit(
+    # Define callbacks
+    early_stopping = EarlyStopping(
+        monitor='val_loss',
+        patience=3,
+        restore_best_weights=True,
+        verbose=1
+    )
+
+    # ModelCheckpoint to save the best model during training
+    checkpoint = ModelCheckpoint(
+        BEST_MODEL_PATH,
+        monitor='val_loss',
+        save_best_only=True,
+        save_weights_only=False,  # Set to False to save the entire model
+        verbose=1
+    )
+
+    # Fit the model
+    history = model.fit(
         X_train_padded, y_train,
         validation_data=(X_val_padded, y_val),
         epochs=10,
-        batch_size=64,
-        callbacks=[early_stopping]
+        batch_size=64,  # Adjust batch size based on GPU memory
+        callbacks=[early_stopping, checkpoint],
+        verbose=1  # Set to 1 to see progress
     )
 
+    # Save the final model after training completes
+    model.save(FINAL_MODEL_PATH)
+    print(f"Final model saved to {FINAL_MODEL_PATH}")
+
     # Evaluate the model on test data
-    loss, accuracy = model.evaluate(X_test_padded, y_test)
+    loss, accuracy = model.evaluate(X_test_padded, y_test, verbose=1)
     print(f'Test Accuracy: {accuracy * 100:.2f}%')
 
 
