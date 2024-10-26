@@ -13,8 +13,10 @@ from tensorflow.keras.mixed_precision import set_global_policy
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.preprocessing.text import Tokenizer
 from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import os
 import numpy as np
+import matplotlib.pyplot as plt
 
 # Ensure nltk packages are downloaded
 def download_nltk_dependencies() -> None:
@@ -28,18 +30,7 @@ def preprocess_text(
     stemmer: nltk.stem.PorterStemmer,
     stopwords_set: set
 ) -> str:
-    """
-    Preprocess the input text by removing non-alphabet characters,
-    tokenizing, lowercasing, stemming, and removing stopwords.
-
-    Args:
-        text (str): The text to preprocess.
-        stemmer (nltk.stem.PorterStemmer): The stemmer to use.
-        stopwords_set (set): A set of stopwords to remove.
-
-    Returns:
-        str: The preprocessed text.
-    """
+    
     # Remove non-alphabet characters
     text = re.sub(r'[^a-zA-Z]', ' ', text)
     # Tokenize and convert to lowercase
@@ -57,18 +48,7 @@ def load_and_map_labels(
     test_path: str,
     label_map: dict
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Load datasets and map labels according to the provided label_map.
-
-    Args:
-        train_path (str): Path to the training CSV file.
-        val_path (str): Path to the validation CSV file.
-        test_path (str): Path to the test CSV file.
-        label_map (dict): Mapping from original labels to new labels.
-
-    Returns:
-        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: Loaded and label-mapped DataFrames.
-    """
+    
     train_df = pd.read_csv(train_path, encoding='utf-8')
     val_df = pd.read_csv(val_path, encoding='utf-8')
     test_df = pd.read_csv(test_path, encoding='utf-8')
@@ -80,16 +60,7 @@ def load_and_map_labels(
 
 # Custom encoding function to handle unknown labels
 def encode_with_unknown(labels, label_encoder):
-    """
-    Encode labels, assigning a special index to unknown labels.
-
-    Args:
-        labels (pd.Series): Series of labels to encode.
-        label_encoder (LabelEncoder): Fitted LabelEncoder.
-
-    Returns:
-        list: Encoded labels with unknowns mapped to a special index.
-    """
+    
     classes = label_encoder.classes_
     mapping = {label: idx for idx, label in enumerate(classes)}
     unknown_idx = len(classes)  # Assign the next index for unknowns
@@ -98,19 +69,6 @@ def encode_with_unknown(labels, label_encoder):
 
 # Build the model with additional features
 def build_model(input_dim: int, output_dim: int, input_length: int, num_speakers: int, num_subjects: int) -> Model:
-    """
-    Build a Bidirectional LSTM model for binary classification with additional features.
-
-    Args:
-        input_dim (int): Size of the vocabulary.
-        output_dim (int): Dimension of the embedding vectors.
-        input_length (int): Length of input sequences.
-        num_speakers (int): Number of unique speakers plus one for 'unknown'.
-        num_subjects (int): Number of unique subjects plus one for 'unknown'.
-
-    Returns:
-        Model: The compiled Keras model.
-    """
     # Text input
     text_input = Input(shape=(input_length,), name='text_input')
     embedding_layer = Embedding(input_dim=input_dim, output_dim=output_dim, input_length=input_length)(text_input)
@@ -314,7 +272,7 @@ def main() -> None:
             'subject_input': train_df['subject_encoded']
         },
         y_train,
-        validation_data=(
+        validation_data=( 
             {
                 'text_input': X_val_text_padded,
                 'speaker_input': val_df['speaker_encoded'],
@@ -344,19 +302,27 @@ def main() -> None:
     )
     print(f'Test Accuracy: {accuracy * 100:.2f}%')
 
+    # Generate predictions for confusion matrix
+    y_pred_prob = model.predict({
+        'text_input': X_test_text_padded,
+        'speaker_input': test_df['speaker_encoded'],
+        'subject_input': test_df['subject_encoded']
+    })
+
+    # Convert probabilities to binary predictions
+    y_pred = (y_pred_prob > 0.5).astype(int).flatten()
+
+    # Calculate confusion matrix
+    cm = confusion_matrix(y_test, y_pred)
+
+    # Display confusion matrix
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Fake', 'Not Fake'])
+    disp.plot(cmap=plt.cm.Blues)
+    plt.title("Confusion Matrix")
+    plt.show()
+
     # Define predict function
     def predict_statement(statement: str, speaker: str, subject: str) -> str:
-        """
-        Predict whether a statement is 'Fake' or 'Not Fake'.
-
-        Args:
-            statement (str): The statement to classify.
-            speaker (str): The speaker of the statement.
-            subject (str): The subject of the statement.
-
-        Returns:
-            str: 'Fake' or 'Not Fake'
-        """
         # Load the trained model and tokenizer
         model = load_model(MODEL_PATH)
         with open(TOKENIZER_PATH, 'rb') as f:

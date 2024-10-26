@@ -227,7 +227,7 @@ def main():
     # =========================
     early_stopping = EarlyStopping(
         monitor='val_loss',
-        patience=3,
+        patience=20,
         restore_best_weights=True,
         verbose=1
     )
@@ -243,7 +243,7 @@ def main():
     # =========================
     # Train the Model
     # =========================
-    epochs = 10  # Adjust as needed
+    epochs = 50  # Adjust as needed
 
     history = model.fit(
         train_dataset,
