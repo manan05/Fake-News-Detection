@@ -330,7 +330,7 @@ def main():
     # -------------------------
     # Train the Model
     # -------------------------
-    epochs = 5  # Adjust as needed
+    epochs = 10  # Adjust as needed
 
     history = model.fit(
         train_dataset,
