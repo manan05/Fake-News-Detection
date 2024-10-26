@@ -1,7 +1,7 @@
 # predict.py
 
 import tensorflow as tf
-from transformers import BertTokenizer
+from transformers import BertTokenizer, TFDistilBertModel  # Import TFDistilBertModel
 from tensorflow.keras.models import load_model
 import numpy as np
 
@@ -13,20 +13,42 @@ import os
 
 def predict_statement(statement, speaker, subject):
     # Paths
-    MODEL_DIR = './models'
+    MODEL_DIR = 'models'
     SAVED_OBJECTS_DIR = './saved_objects'
-    MODEL_SAVE_PATH = os.path.join(MODEL_DIR, 'bert_model.h5')
+    MODEL_SAVE_PATH = os.path.join(MODEL_DIR, 'distilbert_model.h5')
     TOKENIZER_SAVE_PATH = os.path.join(SAVED_OBJECTS_DIR, 'tokenizer.pkl')
     SPEAKER_ENCODER_PATH = os.path.join(SAVED_OBJECTS_DIR, 'speaker_encoder.pkl')
     SUBJECT_ENCODER_PATH = os.path.join(SAVED_OBJECTS_DIR, 'subject_encoder.pkl')
 
-    # Load tokenizer and encoders
-    tokenizer = load_object(TOKENIZER_SAVE_PATH)
-    speaker_encoder = load_object(SPEAKER_ENCODER_PATH)
-    subject_encoder = load_object(SUBJECT_ENCODER_PATH)
+    # Debug: Check the current working directory
+    print("Current Working Directory:", os.getcwd())
+    
+    # Debug: Check if the model path exists
+    if os.path.exists(MODEL_SAVE_PATH):
+        print("Model file found.")
+    else:
+        print(f"Model file NOT found at {MODEL_SAVE_PATH}. Please check the path.")
+        return
 
-    # Load model
-    model = load_model(MODEL_SAVE_PATH, custom_objects={'TFBertModel': tf.keras.Model})
+    # Load tokenizer and encoders
+    try:
+        tokenizer = load_object(TOKENIZER_SAVE_PATH)
+        speaker_encoder = load_object(SPEAKER_ENCODER_PATH)
+        subject_encoder = load_object(SUBJECT_ENCODER_PATH)
+    except Exception as e:
+        print(f"Error loading tokenizer or encoders: {e}")
+        return
+
+    # Load model with correct custom_objects mapping
+    try:
+        model = load_model(
+            MODEL_SAVE_PATH,
+            custom_objects={'TFDistilBertModel': TFDistilBertModel}  # Use TFDistilBertModel from transformers
+        )
+        print("Model loaded successfully.")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return
 
     # Preprocess inputs
     statement = preprocess_text(statement)
@@ -42,8 +64,6 @@ def predict_statement(statement, speaker, subject):
     # Encode speaker and subject
     speaker_classes = list(speaker_encoder.classes_)
     subject_classes = list(subject_encoder.classes_)
-    num_speakers = len(speaker_classes) + 1
-    num_subjects = len(subject_classes) + 1
 
     def encode_feature(feature, encoder, classes):
         mapping = {label: idx for idx, label in enumerate(classes)}
@@ -61,13 +81,25 @@ def predict_statement(statement, speaker, subject):
         'subject_input': subject_encoded
     }
 
+    # Debug: Display the input shapes for model prediction
+    print("Input shapes for model prediction:")
+    print(f"input_ids: {inputs['input_ids'].shape}")
+    print(f"attention_mask: {inputs['attention_mask'].shape}")
+    print(f"speaker_input: {speaker_encoded.shape}")
+    print(f"subject_input: {subject_encoded.shape}")
+
     # Make prediction
-    prediction = model.predict(inputs)
-    predicted_label = (prediction > 0.5).astype(int)[0][0]
-    confidence = prediction[0][0]
+    try:
+        prediction = model.predict(inputs)
+        predicted_label = (prediction > 0.5).astype(int)[0][0]
+        confidence = prediction[0][0]
+    except Exception as e:
+        print(f"Error during prediction: {e}")
+        return
 
     label = 'Not Fake' if predicted_label == 1 else 'Fake'
 
+    # Display the results
     print(f"Statement: {statement}")
     print(f"Speaker: {speaker}")
     print(f"Subject: {subject}")
@@ -76,8 +108,8 @@ def predict_statement(statement, speaker, subject):
 
 if __name__ == '__main__':
     # Example usage
-    test_statement = "The economy is stronger than ever."
-    test_speaker = "Donald Trump"
-    test_subject = "economy"
+    test_statement = "A \"study showed as many as one in four people have had a package stolen from their residence."
+    test_speaker = "rob hutton"
+    test_subject = "consumer safety;criminal justice;legal issues;crime"
 
     predict_statement(test_statement, test_speaker, test_subject)

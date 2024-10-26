@@ -2,6 +2,11 @@ import pandas as pd
 import tensorflow as tf
 from transformers import BertTokenizer, TFBertModel
 from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.mixed_precision import set_global_policy
+
+# Enable mixed precision for better performance and reduced memory usage
+set_global_policy('mixed_float16')
+print("Mixed precision set to 'mixed_float16'.")
 
 # Load the data
 def load_data(file_path):
@@ -60,6 +65,7 @@ def main():
     # Build and compile the BERT model
     model = build_bert_model(max_length)
     
+    # Use mixed precision optimizer
     optimizer = tf.keras.optimizers.Adam(learning_rate=2e-5)
     
     model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
@@ -77,7 +83,7 @@ def main():
         validation_data=({'input_ids': tf.convert_to_tensor(X_val_encoded['input_ids']), 
                           'attention_mask': tf.convert_to_tensor(X_val_encoded['attention_mask'])}, y_val),
         epochs=10,
-        batch_size=16,
+        batch_size=4,  # Adjust as necessary for your GPU memory
         callbacks=[early_stopping]
     )
 
