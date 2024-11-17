@@ -57,6 +57,11 @@ Thumbs.db
 .vscode/
 .idea/
 ./LIAR2
-*models/
-BERT/models/
+*/models/
+BiLSTM/saved_models/
+*/saved_objects/
+
+BiLSTM/saved_models
+
+
 

@@ -1,5 +1,3 @@
-# predict.py
-
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 import numpy as np
@@ -34,16 +32,17 @@ def predict_statement(statement, speaker, subject):
     max_length = 100
     padded_sequence = pad_sequences(sequence, maxlen=max_length, padding='post')
 
-    def encode_feature(feature, encoder, classes):
-        mapping = {label: idx for idx, label in enumerate(classes)}
-        unknown_idx = len(classes)
+    def encode_feature(feature, encoder):
+        mapping = {label: idx for idx, label in enumerate(encoder.categories_[0])}
+        unknown_idx = len(encoder.categories_[0])
         return [mapping.get(feature, unknown_idx)]
 
-    speaker_classes = list(speaker_encoder.classes_)
-    subject_classes = list(subject_encoder.classes_)
+    speaker_classes = list(speaker_encoder.categories_[0])
+    subject_classes = list(subject_encoder.categories_[0])
 
-    speaker_encoded = encode_feature(speaker, speaker_encoder, speaker_classes)
-    subject_encoded = encode_feature(subject, subject_encoder, subject_classes)
+    speaker_encoded = encode_feature(speaker, speaker_encoder)
+    subject_encoded = encode_feature(subject, subject_encoder)
+
 
     speaker_encoded = np.array(speaker_encoded)
     subject_encoded = np.array(subject_encoded)

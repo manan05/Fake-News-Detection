@@ -1,250 +1,278 @@
-# train.py
-
+import os
+import sys
+import pickle
+import numpy as np
+import pandas as pd
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, Dropout, Concatenate, Embedding, Flatten
+from tensorflow.keras.layers import (
+    Input,
+    Dense,
+    Dropout,
+    Concatenate,
+    Embedding,
+    Flatten,
+    Conv1D,
+    GlobalMaxPooling1D
+)
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-import numpy as np
-import os
-import sys
+from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.metrics import confusion_matrix, classification_report
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
 
-from utils import (
-    download_nltk_dependencies,
-    preprocess_text,
-    load_and_map_labels,
-    encode_with_unknown,
-    save_object,
-    create_directories
-)
-from sklearn.preprocessing import LabelEncoder
+
+def create_directories(dirs):
+    for directory in dirs:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            print(f"Created directory: {directory}")
+        else:
+            print(f"Directory already exists: {directory}")
+
+def save_object(obj, filepath):
+    with open(filepath, 'wb') as f:
+        pickle.dump(obj, f)
+    print(f"Saved object to {filepath}")
+
+def load_data(train_path, val_path, test_path):
+    try:
+        train_df = pd.read_csv(train_path)
+        val_df = pd.read_csv(val_path)
+        test_df = pd.read_csv(test_path)
+        print("Successfully loaded CSV files.")
+    except Exception as e:
+        print(f"Error loading CSV files: {e}")
+        sys.exit(1)
+    
+    required_columns = {'statement', 'speaker', 'subject', 'label'}
+    for df, name in zip([train_df, val_df, test_df], ['train', 'validation', 'test']):
+        if not required_columns.issubset(df.columns):
+            print(f"Missing columns in {name} dataset. Required columns: {required_columns}")
+            sys.exit(1)
+    
+    print("All datasets contain required columns.")
+    return train_df, val_df, test_df
+
+def encode_labels(train_df, val_df, test_df):
+    label_map = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1}
+    
+    # Map labels
+    for df, name in zip([train_df, val_df, test_df], ['train', 'validation', 'test']):
+        df['label'] = df['label'].map(label_map)
+        if df['label'].isnull().any():
+            print(f"Found unmapped labels in {name} dataset.")
+            sys.exit(1)
+    print("Labels successfully mapped to binary.")
+    return label_map
+
+def encode_categorical_features(train_df, val_df, test_df):
+    speaker_encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+    subject_encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+    
+    speaker_encoder.fit(train_df[['speaker']])
+    subject_encoder.fit(train_df[['subject']])
+    
+    def encode_and_reshape(df, column, encoder, feature_name):
+        encoded = encoder.transform(df[[column]]).astype(int)
+        special_index = len(encoder.categories_[0])
+        encoded[encoded == -1] = special_index
+        reshaped = encoded.reshape(-1, 1)
+        print(f"Encoded and reshaped {feature_name} feature.")
+        return reshaped
+    
+    train_speaker = encode_and_reshape(train_df, 'speaker', speaker_encoder, 'train_speaker')
+    val_speaker = encode_and_reshape(val_df, 'speaker', speaker_encoder, 'val_speaker')
+    test_speaker = encode_and_reshape(test_df, 'speaker', speaker_encoder, 'test_speaker')
+    
+    train_subject = encode_and_reshape(train_df, 'subject', subject_encoder, 'train_subject')
+    val_subject = encode_and_reshape(val_df, 'subject', subject_encoder, 'val_subject')
+    test_subject = encode_and_reshape(test_df, 'subject', subject_encoder, 'test_subject')
+    num_speakers = len(speaker_encoder.categories_[0]) + 1
+    num_subjects = len(subject_encoder.categories_[0]) + 1
+    
+    print(f"Number of speakers (including 'unknown'): {num_speakers}")
+    print(f"Number of subjects (including 'unknown'): {num_subjects}")
+    
+    return (train_speaker, val_speaker, test_speaker), (train_subject, val_subject, test_subject), (speaker_encoder, subject_encoder)
+
+def tokenize_and_pad(train_texts, val_texts, test_texts, num_words=10000, max_length=100):
+    tokenizer = Tokenizer(num_words=num_words, oov_token="<OOV>")
+    tokenizer.fit_on_texts(train_texts)
+    print("Tokenizer fitted on training texts.")
+    
+    X_train = tokenizer.texts_to_sequences(train_texts)
+    X_val = tokenizer.texts_to_sequences(val_texts)
+    X_test = tokenizer.texts_to_sequences(test_texts)
+    
+    X_train_padded = pad_sequences(X_train, maxlen=max_length, padding='post', truncating='post')
+    X_val_padded = pad_sequences(X_val, maxlen=max_length, padding='post', truncating='post')
+    X_test_padded = pad_sequences(X_test, maxlen=max_length, padding='post', truncating='post')
+    
+    print("Text data tokenized and padded.")
+    return (X_train_padded, X_val_padded, X_test_padded), tokenizer
+
+def prepare_datasets(X_text, X_speaker, X_subject, y, batch_size=32, shuffle=False):
+    inputs = {
+        'text_input': X_text,
+        'speaker_input': X_speaker,
+        'subject_input': X_subject
+    }
+    if y is not None:
+        dataset = tf.data.Dataset.from_tensor_slices((inputs, y))
+    else:
+        dataset = tf.data.Dataset.from_tensor_slices(inputs)
+    
+    if shuffle:
+        dataset = dataset.shuffle(buffer_size=10000)
+    
+    dataset = dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+    return dataset
+
+def build_model(vocab_size, embedding_dim, max_length, num_speakers, num_subjects):
+    text_input = Input(shape=(max_length,), name='text_input')
+    embedding_text = Embedding(input_dim=vocab_size, output_dim=embedding_dim, input_length=max_length)(text_input)
+    dropout_text = Dropout(0.5)(embedding_text)
+    conv = Conv1D(filters=128, kernel_size=5, activation='relu')(dropout_text)
+    pool = GlobalMaxPooling1D()(conv)
+    dense_text = Dense(128, activation='relu')(pool)
+    dropout_text_dense = Dropout(0.5)(dense_text)
+    
+    speaker_input = Input(shape=(1,), name='speaker_input')
+    embedding_speaker = Embedding(input_dim=num_speakers, output_dim=16)(speaker_input)
+    flatten_speaker = Flatten()(embedding_speaker)
+    
+    subject_input = Input(shape=(1,), name='subject_input')
+    embedding_subject = Embedding(input_dim=num_subjects, output_dim=16)(subject_input)
+    flatten_subject = Flatten()(embedding_subject)
+    
+    concatenated = Concatenate()([dropout_text_dense, flatten_speaker, flatten_subject])
+    dense = Dense(64, activation='relu')(concatenated)
+    dropout = Dropout(0.5)(dense)
+    output = Dense(1, activation='sigmoid')(dropout)
+    
+    model = Model(inputs=[text_input, speaker_input, subject_input], outputs=output)
+    return model
+
+def get_labels_and_predictions(dataset, model):
+    true_labels = []
+    predictions = []
+    
+    for batch in dataset:
+        inputs, labels = batch
+        preds = model.predict(inputs)
+        preds = (preds > 0.5).astype(int)
+        true_labels.extend(labels.numpy())
+        predictions.extend(preds.flatten())
+    
+    return np.array(true_labels), np.array(predictions)
 
 def main():
-    # =========================
-    # Configuration and Paths
-    # =========================
-    DATA_DIR = '../data'
+    DATA_DIR = '../data'  # Ensure your data is in this directory
     MODEL_DIR = './models'
     SAVED_OBJECTS_DIR = './saved_objects'
-
+    
     create_directories([DATA_DIR, MODEL_DIR, SAVED_OBJECTS_DIR])
-
+    
     TRAIN_PATH = os.path.join(DATA_DIR, 'train.csv')
     VAL_PATH = os.path.join(DATA_DIR, 'valid.csv')
     TEST_PATH = os.path.join(DATA_DIR, 'test.csv')
-
+    
     MODEL_SAVE_PATH = os.path.join(MODEL_DIR, 'text_cnn_model.h5')
+    
     TOKENIZER_SAVE_PATH = os.path.join(SAVED_OBJECTS_DIR, 'tokenizer.pkl')
     SPEAKER_ENCODER_PATH = os.path.join(SAVED_OBJECTS_DIR, 'speaker_encoder.pkl')
     SUBJECT_ENCODER_PATH = os.path.join(SAVED_OBJECTS_DIR, 'subject_encoder.pkl')
     LABEL_MAP_PATH = os.path.join(SAVED_OBJECTS_DIR, 'label_map.pkl')
 
-    # =========================
-    # Check and Configure GPU
-    # =========================
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         try:
-            # Enable memory growth for the GPUs
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
-            print(f"{len(gpus)} Physical GPUs found.")
+            print(f"{len(gpus)} Physical GPU(s) found and memory growth set.")
         except RuntimeError as e:
             print(f"Error setting memory growth: {e}")
             sys.exit(1)
     else:
-        print("No GPUs found.")
+        print("No GPU found. Exiting.")
         sys.exit(1)
-
-    # =========================
-    # Download NLTK Dependencies
-    # =========================
-    download_nltk_dependencies()
-
-    # =========================
-    # Label Mapping
-    # =========================
-    # Original labels (assuming 0-5), mapping to binary classification
-    label_map = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1}
-    train_df, val_df, test_df = load_and_map_labels(TRAIN_PATH, VAL_PATH, TEST_PATH, label_map)
-
-    # Save label map for future use
-    save_object(label_map, LABEL_MAP_PATH)
-    print(f"Label map saved to {LABEL_MAP_PATH}")
-
-    # =========================
-    # Preprocess Text Data
-    # =========================
-    for df in [train_df, val_df, test_df]:
-        df['statement'] = df['statement'].astype(str).apply(preprocess_text)
-        df['speaker'] = df['speaker'].astype(str)
-        df['subject'] = df['subject'].astype(str)
-
-    # =========================
-    # Initialize Tokenizer
-    # =========================
-    tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=10000, oov_token="<OOV>")
-    tokenizer.fit_on_texts(train_df['statement'])
-
-    # Save the tokenizer for future use
-    save_object(tokenizer, TOKENIZER_SAVE_PATH)
-    print(f"Tokenizer saved to {TOKENIZER_SAVE_PATH}")
-
-    # =========================
-    # Tokenize and Pad Sequences
-    # =========================
-    def tokenize_and_pad(texts, tokenizer, max_length=100):
-        sequences = tokenizer.texts_to_sequences(texts)
-        padded = tf.keras.preprocessing.sequence.pad_sequences(sequences, maxlen=max_length, padding='post')
-        return padded
-
-    max_length = 100
-    X_train_text = tokenize_and_pad(train_df['statement'], tokenizer, max_length)
-    X_val_text = tokenize_and_pad(val_df['statement'], tokenizer, max_length)
-    X_test_text = tokenize_and_pad(test_df['statement'], tokenizer, max_length)
-
-    # =========================
-    # Encode Categorical Features
-    # =========================
-    # Speaker Encoding
-    speaker_encoder = LabelEncoder()
-    speaker_encoder.fit(train_df['speaker'])
-    save_object(speaker_encoder, SPEAKER_ENCODER_PATH)
-    print(f"Speaker encoder saved to {SPEAKER_ENCODER_PATH}")
-
-    # Subject Encoding
-    subject_encoder = LabelEncoder()
-    subject_encoder.fit(train_df['subject'])
-    save_object(subject_encoder, SUBJECT_ENCODER_PATH)
-    print(f"Subject encoder saved to {SUBJECT_ENCODER_PATH}")
-
-    # Number of unique speakers and subjects (+1 for 'unknown')
-    num_speakers = len(speaker_encoder.classes_) + 1
-    num_subjects = len(subject_encoder.classes_) + 1
-
-    # Encode speakers and subjects with unknown handling
-    train_speaker = encode_with_unknown(train_df['speaker'], speaker_encoder)
-    val_speaker = encode_with_unknown(val_df['speaker'], speaker_encoder)
-    test_speaker = encode_with_unknown(test_df['speaker'], speaker_encoder)
-
-    train_subject = encode_with_unknown(train_df['subject'], subject_encoder)
-    val_subject = encode_with_unknown(val_df['subject'], subject_encoder)
-    test_subject = encode_with_unknown(test_df['subject'], subject_encoder)
-
-    # =========================
-    # Prepare Labels
-    # =========================
-    y_train = train_df['label'].values
-    y_val = val_df['label'].values
-    y_test = test_df['label'].values
-
-    # =========================
-    # Mixed Precision Configuration
-    # =========================
+    
     try:
-        from tensorflow.keras.mixed_precision import set_global_policy
-
-        set_global_policy('mixed_float16')
-        print("Mixed precision set to 'mixed_float16'.")
+        nltk.download('punkt')
+        nltk.download('stopwords')
+        print("Successfully downloaded NLTK dependencies.")
     except Exception as e:
-        print(f"Mixed precision could not be set: {e}")
-        print("Proceeding without mixed precision.")
-
-    # =========================
-    # Build the CNN Model
-    # =========================
-    def create_cnn_model(vocab_size, embedding_dim, max_length, num_speakers, num_subjects):
-        # Text Input
-        text_input = Input(shape=(max_length,), name='text_input')
-        embedding = Embedding(input_dim=vocab_size, output_dim=embedding_dim, input_length=max_length)(text_input)
-        dropout = Dropout(0.5)(embedding)
-        conv = tf.keras.layers.Conv1D(filters=128, kernel_size=5, activation='relu')(dropout)
-        pool = tf.keras.layers.GlobalMaxPooling1D()(conv)
-        dense = Dense(128, activation='relu')(pool)
-        dropout = Dropout(0.5)(dense)
-        
-        # Speaker Input
-        speaker_input = Input(shape=(1,), name='speaker_input')
-        speaker_embedding = Embedding(input_dim=num_speakers, output_dim=16, input_length=1)(speaker_input)
-        speaker_embedding = Flatten()(speaker_embedding)
-        
-        # Subject Input
-        subject_input = Input(shape=(1,), name='subject_input')
-        subject_embedding = Embedding(input_dim=num_subjects, output_dim=16, input_length=1)(subject_input)
-        subject_embedding = Flatten()(subject_embedding)
-        
-        # Concatenate All Features
-        combined = Concatenate()([dropout, speaker_embedding, subject_embedding])
-        combined = Dense(64, activation='relu')(combined)
-        combined = Dropout(0.5)(combined)
-        output = Dense(1, activation='sigmoid', dtype='float32')(combined)  # Ensure output is float32
-        
-        model = Model(inputs=[text_input, speaker_input, subject_input], outputs=output)
-        return model
-
-    vocab_size = 10000
+        print(f"Error downloading NLTK dependencies: {e}")
+        sys.exit(1)
+    
+    train_df, val_df, test_df = load_data(TRAIN_PATH, VAL_PATH, TEST_PATH)
+    
+    label_map = encode_labels(train_df, val_df, test_df)
+    
+    (train_speaker, val_speaker, test_speaker), (train_subject, val_subject, test_subject), (speaker_encoder, subject_encoder) = encode_categorical_features(train_df, val_df, test_df)
+    
+    save_object(speaker_encoder, SPEAKER_ENCODER_PATH)
+    save_object(subject_encoder, SUBJECT_ENCODER_PATH)
+    save_object(label_map, LABEL_MAP_PATH)
+    
+    # Tokenize and pad text data
+    (X_train_padded, X_val_padded, X_test_padded), tokenizer = tokenize_and_pad(
+        train_df['statement'],
+        val_df['statement'],
+        test_df['statement'],
+        num_words=10000,
+        max_length=100
+    )
+    
+    # Save tokenizer
+    save_object(tokenizer, TOKENIZER_SAVE_PATH)
+    
+    # Prepare labels
+    y_train = train_df['label'].values.astype(np.float32)
+    y_val = val_df['label'].values.astype(np.float32)
+    y_test = test_df['label'].values.astype(np.float32)
+    
+    vocab_size = min(len(tokenizer.word_index) + 1, 10000)
     embedding_dim = 128
-
-    model = create_cnn_model(vocab_size, embedding_dim, max_length, num_speakers, num_subjects)
+    num_speakers = len(speaker_encoder.categories_[0]) + 1  # +1 for 'unknown'
+    num_subjects = len(subject_encoder.categories_[0]) + 1  # +1 for 'unknown'
+    
+    model = build_model(vocab_size, embedding_dim, max_length=100, num_speakers=num_speakers, num_subjects=num_subjects)
     model.compile(optimizer=Adam(learning_rate=1e-3), loss='binary_crossentropy', metrics=['accuracy'])
+    print("Model compiled successfully.")
     model.summary()
-
-    # =========================
-    # Prepare TensorFlow Datasets
-    # =========================
-    batch_size = 32  # Adjust as needed based on your GPU memory
-
-    # Create TensorFlow datasets
-    train_dataset = tf.data.Dataset.from_tensor_slices((
-        {
-            'text_input': X_train_text,
-            'speaker_input': train_speaker,
-            'subject_input': train_subject
-        },
-        y_train
-    )).shuffle(len(y_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-    val_dataset = tf.data.Dataset.from_tensor_slices((
-        {
-            'text_input': X_val_text,
-            'speaker_input': val_speaker,
-            'subject_input': val_subject
-        },
-        y_val
-    )).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-    test_dataset = tf.data.Dataset.from_tensor_slices((
-        {
-            'text_input': X_test_text,
-            'speaker_input': test_speaker,
-            'subject_input': test_subject
-        },
-        y_test
-    )).batch(batch_size).prefetch(tf.data.AUTOTUNE)
-
-    # =========================
-    # Define Callbacks
-    # =========================
+    
+    batch_size = 32
+    
+    train_dataset = prepare_datasets(X_train_padded, train_speaker, train_subject, y_train, batch_size=batch_size, shuffle=True)
+    val_dataset = prepare_datasets(X_val_padded, val_speaker, val_subject, y_val, batch_size=batch_size, shuffle=False)
+    test_dataset = prepare_datasets(X_test_padded, test_speaker, test_subject, y_test, batch_size=batch_size, shuffle=False)
+    
+    print("TensorFlow datasets prepared.")
+    
     early_stopping = EarlyStopping(
         monitor='val_loss',
-        patience=20,
+        patience=5,
         restore_best_weights=True,
         verbose=1
     )
-
+    
     checkpoint = ModelCheckpoint(
         MODEL_SAVE_PATH,
         monitor='val_loss',
         save_best_only=True,
-        save_weights_only=False,  # Saves the entire model
+        save_weights_only=False,
         verbose=1
     )
-
-    # =========================
-    # Train the Model
-    # =========================
-    epochs = 50  # Adjust as needed
-
+    
+    epochs = 15  # Reduced epochs for quicker training; adjust as needed
+    
+    print("Starting training...")
     history = model.fit(
         train_dataset,
         validation_data=val_dataset,
@@ -252,19 +280,29 @@ def main():
         callbacks=[early_stopping, checkpoint],
         verbose=1
     )
-
-    # =========================
-    # Save the Final Model
-    # =========================
+    
     model.save(MODEL_SAVE_PATH)
     print(f"Final model saved to {MODEL_SAVE_PATH}")
+    
+    def evaluate_and_print(dataset, dataset_name):
+        print(f"\nEvaluating on {dataset_name} Data...")
+        loss, accuracy = model.evaluate(dataset)
+        print(f"{dataset_name} Loss: {loss:.4f}")
+        print(f"{dataset_name} Accuracy: {accuracy * 100:.2f}%")
+        
+        true_labels, predictions = get_labels_and_predictions(dataset, model)
+        
+        conf_matrix = confusion_matrix(true_labels, predictions)
+        class_report = classification_report(true_labels, predictions, target_names=['class_0', 'class_1'])
+        
+        print(f"{dataset_name} Confusion Matrix:")
+        print(conf_matrix)
+        print(f"{dataset_name} Classification Report:")
+        print(class_report)
+    
 
-    # =========================
-    # Evaluate on Test Data
-    # =========================
-    loss, accuracy = model.evaluate(test_dataset)
-    print(f'Test Loss: {loss}')
-    print(f'Test Accuracy: {accuracy * 100:.2f}%')
+    evaluate_and_print(val_dataset, "Validation")
+    evaluate_and_print(test_dataset, "Test")
 
 if __name__ == '__main__':
     main()

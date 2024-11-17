@@ -1,5 +1,3 @@
-# train.py
-
 import os
 import re
 import pickle
@@ -13,32 +11,32 @@ from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
 import matplotlib.pyplot as plt
 
-# Ensure TensorFlow is using mixed precision for better performance and reduced memory usage
 from tensorflow.keras.mixed_precision import set_global_policy
 
 
-
 def download_nltk_dependencies():
-    """Download required NLTK packages."""
+    """Download necessary NLTK data."""
     nltk.download('punkt')
     nltk.download('stopwords')
+
 
 def preprocess_text(text):
     stemmer = nltk.stem.PorterStemmer()
     stopwords_set = set(nltk.corpus.stopwords.words('english'))
 
-    # Remove non-alphabet characters
+    # non-alphabet characters
     text = re.sub(r'[^a-zA-Z]', ' ', text)
-    # Tokenize and convert to lowercase
+    # convert to lowercase
     words = nltk.word_tokenize(text.lower())
-    # Remove stopwords
+    #  stopwords
     words = [word for word in words if word not in stopwords_set]
     # Stem words
     processed_words = [stemmer.stem(word) for word in words]
     return ' '.join(processed_words)
+
 
 def load_and_map_labels(train_path, val_path, test_path, label_map):
 
@@ -48,10 +46,10 @@ def load_and_map_labels(train_path, val_path, test_path, label_map):
 
     for df in [train_df, val_df, test_df]:
         df['label'] = df['label'].map(label_map)
-        # Drop rows with missing essential fields
         df.dropna(subset=['statement', 'speaker', 'subject', 'label'], inplace=True)
 
     return train_df, val_df, test_df
+
 
 def encode_with_unknown(labels, label_encoder):
     classes = label_encoder.classes_
@@ -60,17 +58,18 @@ def encode_with_unknown(labels, label_encoder):
     encoded = [mapping.get(label, unknown_idx) for label in labels]
     return np.array(encoded)
 
+
 def save_object(obj, filepath):
     with open(filepath, 'wb') as f:
         pickle.dump(obj, f)
 
+
 def load_object(filepath):
-    """Load a Python object from a pickle file."""
     with open(filepath, 'rb') as f:
         return pickle.load(f)
 
+
 def create_directories(directories):
-    """Create directories if they don't exist."""
     for directory in directories:
         os.makedirs(directory, exist_ok=True)
 
@@ -96,10 +95,8 @@ def main():
 
     label_map = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1}
     train_df, val_df, test_df = load_and_map_labels(TRAIN_PATH, VAL_PATH, TEST_PATH, label_map)
-
     save_object(label_map, LABEL_MAP_PATH)
     print(f"Label map saved to {LABEL_MAP_PATH}")
-
     for df in [train_df, val_df, test_df]:
         df['statement'] = df['statement'].astype(str).apply(preprocess_text)
         df['speaker'] = df['speaker'].astype(str)
@@ -143,31 +140,30 @@ def main():
     val_subject = encode_with_unknown(val_df['subject'], subject_encoder)
     test_subject = encode_with_unknown(test_df['subject'], subject_encoder)
 
+    # target labels
     y_train = train_df['label'].values
     y_val = val_df['label'].values
     y_test = test_df['label'].values
 
-    # Update the mixed precision API for TensorFlow 2.11
     set_global_policy('mixed_float16')
     print("Mixed precision set to 'mixed_float16'.")
 
     def create_model():
-        # Text Inputs
+        # model inputs
         input_ids = Input(shape=(128,), dtype=tf.int32, name='input_ids')
         attention_mask = Input(shape=(128,), dtype=tf.int32, name='attention_mask')
 
-        # Speaker and Subject Inputs
         speaker_input = Input(shape=(1,), dtype=tf.int32, name='speaker_input')
         subject_input = Input(shape=(1,), dtype=tf.int32, name='subject_input')
 
-        # DistilBERT Model
+        # DistilBERT model
         distilbert_model = TFDistilBertModel.from_pretrained('distilbert-base-uncased')
-        distilbert_model.trainable = False  # Freeze DistilBERT layers to save memory and speed up training
+        distilbert_model.trainable = False  # Freeze DistilBERT layers
 
-        # Get the [CLS] token representation
-        distilbert_output = distilbert_model(input_ids, attention_mask=attention_mask)[0][:, 0, :]  # Shape: (batch_size, hidden_size)
+        # embeddings
+        distilbert_output = distilbert_model(input_ids, attention_mask=attention_mask)[0][:, 0, :]  # CLS token
 
-        # Speaker Embedding
+        # Speaker embedding
         speaker_embedding = Embedding(
             input_dim=num_speakers,
             output_dim=16,
@@ -176,7 +172,7 @@ def main():
         )(speaker_input)
         speaker_embedding = Flatten()(speaker_embedding)  # Shape: (batch_size, 16)
 
-        # Subject Embedding
+        # Subject embedding
         subject_embedding = Embedding(
             input_dim=num_subjects,
             output_dim=16,
@@ -185,7 +181,7 @@ def main():
         )(subject_input)
         subject_embedding = Flatten()(subject_embedding)  # Shape: (batch_size, 16)
 
-        # Concatenate All Features
+        # Concatenate all features
         combined = Concatenate()([distilbert_output, speaker_embedding, subject_embedding])  # Shape: (batch_size, hidden_size + 32)
 
         # Fully Connected Layers
@@ -194,6 +190,7 @@ def main():
         combined = Dropout(0.3)(combined)
         output = Dense(1, activation='sigmoid', dtype='float32')(combined)  # Output Layer
 
+        # the model structure 
         model = Model(inputs=[input_ids, attention_mask, speaker_input, subject_input], outputs=output)
         return model
 
@@ -201,11 +198,9 @@ def main():
     model.compile(optimizer=Adam(learning_rate=2e-5), loss='binary_crossentropy', metrics=['accuracy'])
     model.summary()
 
-    # Reduce batch size to 4 to accommodate GPU memory constraints
     batch_size = 4
 
-    # Create TensorFlow datasets
-    train_dataset = tf.data.Dataset.from_tensor_slices(( 
+    train_dataset = tf.data.Dataset.from_tensor_slices((
         {
             'input_ids': train_encodings['input_ids'],
             'attention_mask': train_encodings['attention_mask'],
@@ -215,7 +210,7 @@ def main():
         y_train
     )).shuffle(len(y_train)).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-    val_dataset = tf.data.Dataset.from_tensor_slices(( 
+    val_dataset = tf.data.Dataset.from_tensor_slices((
         {
             'input_ids': val_encodings['input_ids'],
             'attention_mask': val_encodings['attention_mask'],
@@ -225,7 +220,7 @@ def main():
         y_val
     )).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-    test_dataset = tf.data.Dataset.from_tensor_slices(( 
+    test_dataset = tf.data.Dataset.from_tensor_slices((
         {
             'input_ids': test_encodings['input_ids'],
             'attention_mask': test_encodings['attention_mask'],
@@ -264,26 +259,31 @@ def main():
     print(f"Final model saved to {MODEL_SAVE_PATH}")
 
     loss, accuracy = model.evaluate(test_dataset)
-    print(f'Test Loss: {loss}')
+    print(f'Test Loss: {loss:.4f}')
     print(f'Test Accuracy: {accuracy * 100:.2f}%')
 
-    val_preds = model.predict(val_dataset)
-    val_preds_labels = (val_preds > 0.5).astype(int).flatten()
+    def evaluate_model(dataset, true_labels, dataset_name="Dataset"):
+        # Make predictions
+        preds = model.predict(dataset)
+        preds_labels = (preds > 0.5).astype(int).flatten()
 
-    test_preds = model.predict(test_dataset)
-    test_preds_labels = (test_preds > 0.5).astype(int).flatten()
+        cm = confusion_matrix(true_labels, preds_labels)
+        print(f"\n{dataset_name} Confusion Matrix:")
+        print(cm)
 
-    val_cm = confusion_matrix(y_val, val_preds_labels)
-    disp_val = ConfusionMatrixDisplay(confusion_matrix=val_cm, display_labels=['Fake', 'Not Fake'])
-    disp_val.plot(cmap=plt.cm.Blues)
-    plt.title("Validation Confusion Matrix")
-    plt.show()
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Fake', 'Not Fake'])
+        disp.plot(cmap=plt.cm.Blues)
+        plt.title(f"{dataset_name} Confusion Matrix")
+        plt.show()
 
-    test_cm = confusion_matrix(y_test, test_preds_labels)
-    disp_test = ConfusionMatrixDisplay(confusion_matrix=test_cm, display_labels=['Fake', 'Not Fake'])
-    disp_test.plot(cmap=plt.cm.Blues)
-    plt.title("Test Confusion Matrix")
-    plt.show()
+        report = classification_report(true_labels, preds_labels, target_names=['Fake', 'Not Fake'])
+        print(f"{dataset_name} Classification Report:")
+        print(report)
+
+    evaluate_model(val_dataset, y_val, dataset_name="Validation")
+
+    evaluate_model(test_dataset, y_test, dataset_name="Test")
+
 
 if __name__ == '__main__':
     main()

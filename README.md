@@ -1,3 +1,13 @@
+
+# Download our saved models
+
+From the below links, you can donwload the models that we have saved by training on the LIAR2 dataset using the below three models,
+
+Please open the link using your UTA account and download the folder that contain the saved models from the UTA sharepoint link and paste it in the respective folder of all the three models namely, BERT, BiLSTM, Text CNN
+
+https://mavsuta-my.sharepoint.com/:f:/g/personal/nxm2555_mavs_uta_edu/Eoo0-Sy5ibtDrI4kJYGlBJQB1FAYr316a2-brkIj6LsUhw?e=1siBx3
+
+
 # Setting up
 To create and activate the virtual environment for this repository, follow these steps:
 
@@ -20,6 +30,19 @@ To create and activate the virtual environment for this repository, follow these
     ```sh
     pip install -r requirements.txt
     ```
+
+# Command to run the predict file for each model
+
+**_NOTE:_** Make sure to download and paste the saved models from the above given link before running the predictions scripts
+
+### BERT
+`python ./BERT/predict.py`
+
+### textCNN
+`python ./textCNN/predict.py`
+
+### BiLSTM
+`python ./BiLSTM/predict.py`
 
 
 # About the Dataset 
@@ -62,4 +85,6 @@ The goal is to predict whether a given statement is fake or not based on the `st
 1. **Fake News Detection**: Automatically flagging misleading or false information in online content.
 2. **Fact-Checking Automation**: Assisting human fact-checkers by prioritizing which claims may need verification.
 3. **Media Literacy Tools**: Providing users with indicators about the reliability of information sources.
-WW
+
+
+
